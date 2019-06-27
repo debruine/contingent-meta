@@ -13,7 +13,13 @@ df <- data.frame(
   mod = sample(c("a", "b"), n*stud*reps, replace = TRUE)
 )
 
-p <- df %>%
+analyses <- df %>%
   group_by(rep, study) %>%
   nest() %>%
-  mutate(p = map_dbl(data, ~t.test(.$x, .$y)$p.value))
+  mutate(t = map(data, ~t.test(.$x, .$y) %>% broom::tidy())) %>%
+  unnest(t, .sep = ".") %>%
+  mutate(w = map(data, ~wilcox.test(.$x, .$y) %>% broom::tidy())) %>%
+  unnest(w, .sep = ".") %>%
+  mutate(better = ifelse(t.p.value < w.p.value, "t", "w"))
+
+         
