@@ -1,0 +1,146 @@
+---
+title: "Mini-Meta Sim"
+date: "17/06/2019"
+output: html_document
+---
+
+```{r, message=FALSE}
+library(tidyverse)
+library(cowplot)
+```
+
+```{r}
+
+sim_combo <- function(rep = 1, n = 50, d = 0) {
+  x1 <- rnorm(n)
+  y1 <- rnorm(n, d)
+  x2 <- rnorm(n)
+  y2 <- rnorm(n, d)
+  
+  t1 <- t.test(x1, y1) %>% broom::tidy()
+  t2 <- t.test(x2, y2) %>% broom::tidy()
+  t_comb <- t.test(c(x1, x2), c(y1, y2)) %>% broom::tidy()
+  
+  w1 <- wilcox.test(x1, y1)$p.value
+  w2 <- wilcox.test(x2, y2)$p.value
+  w_comb <- wilcox.test(c(x1, x2), c(y1, y2))$p.value
+  
+  bind_rows(t1, t2, t_comb) %>%
+    mutate(
+      p.wilcox = c(w1, w2, w_comb),
+      rep = rep, n = n, d = d,
+      type = c("t1","t2","comb"))
+}
+
+```
+
+```{r, eval = FALSE}
+dat <- crossing(
+  rep = 1:10000,
+  n = seq(10, 100, by = 10),
+  d = 0
+) %>%
+  pmap_df(sim_combo)
+
+write_csv(dat, "data/mini-meta-sims_null.csv")
+```
+
+```{r}
+dat0 <- read_csv("data/mini-meta-sims_null.csv") %>%
+    select(rep, d, n, type, estimate, p.value) %>%
+    gather(stat, val, estimate, p.value) %>%
+    unite(var, type, stat) %>%
+    spread(var, val)
+```
+
+
+
+Things affecting choice to run a second study:
+
+* is first estimate in predicted direction? (dir1)
+* is first estimate p < alpha?  (sig1)
+* is first estimate p < "marginal.alpha"? (marginal1)
+
+Things affecting choice to combine 2 studies:
+
+* is second estimate in the same direction as the first? (dir2)
+* is second estimate p < marginal.alpha? (marginal2)
+
+
+
+## Decision Rules
+
+### Report everything no matter what
+
+```{r}
+alpha <- 0.05
+
+dat0 %>%
+  mutate(report = TRUE,
+         sig = comb_p.value < alpha) %>%
+  group_by(n,d, report) %>%
+  summarise(
+    power = mean(sig)
+  ) %>%
+  ggplot(aes(n, power, color = report))+
+  geom_point() +
+  geom_line()
+```
+
+
+### Report if sig1 or both marginal and same direction
+
+```{r}
+
+dd <- NULL
+
+for (marginal.alpha in seq(.1, 1, by = .1)) {
+  d <- dat0 %>%
+    mutate(
+      marginal = marginal.alpha,
+      dir1 = t1_estimate > 0,
+      sig1 = t1_p.value < alpha,
+      marginal1 = t1_p.value < marginal.alpha,
+      dir2 = (t1_estimate > 0) == (t2_estimate > 0),
+      marginal2 = t2_p.value < marginal.alpha,
+      report = sig1 | (marginal1 & marginal2 & dir2),
+      sig = sig1 | (comb_p.value < alpha)
+    ) %>%
+    group_by(n,d, report, marginal) %>%
+    summarise(
+      power = mean(sig),
+      nn = n()
+    )
+  
+  if (is.null(dd)) {
+    dd <- d
+  } else {
+    dd <- bind_rows(dd, d)
+  }
+}
+
+pow <- dd %>%
+  ggplot(aes(n, power, color = as.factor(marginal)))+
+  geom_point() +
+  geom_line() +
+  ylab("False Positives") +
+  ylim(0,1) +
+  facet_wrap(~report, labeller = "label_both") +
+  guides(color=guide_legend(title="Report p1 if p1 < alpha\nor combined if\nboth p < 'marginal' alpha"))
+
+nn <- dd %>%
+  ggplot(aes(n, nn/10000, color = as.factor(marginal)))+
+  geom_point(show.legend = FALSE) +
+  geom_line(show.legend = FALSE) +
+  ylab("Percent of studies") +
+  ylim(0,1) +
+  facet_wrap(~report, labeller = "label_both")
+
+cowplot::plot_grid(pow, nn, nrow = 2, align = "v", axis = "r")
+
+ggsave("figs/marginal_same_dir.png", width = 8, height = 6)
+
+```
+
+
+
